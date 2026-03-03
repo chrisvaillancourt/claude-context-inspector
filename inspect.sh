@@ -10,6 +10,10 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 PORT="${PORT:-9876}"
 
+# Kill any existing proxy on the port
+kill $(lsof -ti:"$PORT") 2>/dev/null || true
+sleep 0.5
+
 # Clean old captures
 rm -f "$DIR/captures"/context-*.json "$DIR/captures"/context-*.html
 
