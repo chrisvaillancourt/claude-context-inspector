@@ -45,22 +45,35 @@ function renderHtml(capture: any): string {
     ? capture.system_blocks
     : [{ type: "text", text: String(capture.system_blocks) }];
 
-  const totalChars = blocks.reduce(
+  const injected = (capture.injected_context ?? []) as {
+    source: string;
+    content: string;
+  }[];
+
+  const totalSystemChars = blocks.reduce(
     (sum: number, b: any) => sum + (b.text?.length ?? 0),
     0
   );
+  const totalInjectedChars = injected.reduce(
+    (sum: number, b: any) => sum + (b.content?.length ?? 0),
+    0
+  );
+  const totalChars = totalSystemChars + totalInjectedChars;
 
-  const blocksHtml = blocks
-    .map((block: any, i: number) => {
+  let blockIndex = 0;
+
+  const systemBlocksHtml = blocks
+    .map((block: any) => {
+      blockIndex++;
       const text = block.text ?? JSON.stringify(block, null, 2);
       const source = identifySource(text);
       const chars = text.length;
       const cacheType = block.cache_control?.type ?? "none";
 
       return `
-      <details class="block" ${i === 0 ? "open" : ""}>
+      <details class="block" ${blockIndex === 1 ? "open" : ""}>
         <summary>
-          <span class="block-num">#${i + 1}</span>
+          <span class="block-num">#${blockIndex}</span>
           <span class="source-tag ${source.className}">${source.label}</span>
           <span class="chars">${(chars / 1024).toFixed(1)}KB · ${chars.toLocaleString()} chars</span>
           ${cacheType !== "none" ? `<span class="cache-tag">cache: ${cacheType}</span>` : ""}
@@ -69,6 +82,36 @@ function renderHtml(capture: any): string {
       </details>`;
     })
     .join("\n");
+
+  const injectedBlocksHtml = injected
+    .map((block: any) => {
+      blockIndex++;
+      const sourceTag = sourceTagForReminder(block.source);
+      const chars = block.content.length;
+
+      return `
+      <details class="block">
+        <summary>
+          <span class="block-num">#${blockIndex}</span>
+          <span class="source-tag ${sourceTag.className}">${sourceTag.label}</span>
+          <span class="chars">${(chars / 1024).toFixed(1)}KB · ${chars.toLocaleString()} chars</span>
+          <span class="cache-tag">injected via message</span>
+        </summary>
+        <pre><code>${escapeHtml(block.content)}</code></pre>
+      </details>`;
+    })
+    .join("\n");
+
+  const injectedHeader =
+    injected.length > 0
+      ? `<h2 class="section-header">Injected Context <span class="dim">(via &lt;system-reminder&gt; in messages)</span></h2>`
+      : "";
+
+  const blocksHtml =
+    `<h2 class="section-header">System Prompt <span class="dim">(API system field)</span></h2>` +
+    systemBlocksHtml +
+    injectedHeader +
+    injectedBlocksHtml;
 
   const toolNames = (capture.metadata?.tool_names ?? []) as string[];
   const toolsSummary =
@@ -118,6 +161,8 @@ function renderHtml(capture: any): string {
     #search { width: 100%; padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.9em; margin-bottom: 16px; }
     #search:focus { outline: none; border-color: var(--accent); }
     .hidden { display: none !important; }
+    .section-header { font-size: 1em; margin: 20px 0 8px; color: var(--dim); font-weight: 500; }
+    .section-header .dim { font-size: 0.8em; font-weight: 400; }
   </style>
 </head>
 <body>
@@ -127,7 +172,7 @@ function renderHtml(capture: any): string {
     <span>Model: ${capture.model ?? "unknown"}</span>
   </div>
   <div class="stats">
-    <div class="stat"><div class="stat-value">${blocks.length}</div><div class="stat-label">System Blocks</div></div>
+    <div class="stat"><div class="stat-value">${blocks.length + injected.length}</div><div class="stat-label">Context Blocks</div></div>
     <div class="stat"><div class="stat-value">${(totalChars / 1024).toFixed(1)}KB</div><div class="stat-label">Total Context</div></div>
     <div class="stat"><div class="stat-value">${capture.metadata?.tools_count ?? 0}</div><div class="stat-label">Tools</div></div>
     <div class="stat"><div class="stat-value">${capture.message_count ?? 0}</div><div class="stat-label">Messages</div></div>
@@ -148,6 +193,21 @@ function renderHtml(capture: any): string {
   </script>
 </body>
 </html>`;
+}
+
+function sourceTagForReminder(
+  source: string
+): { label: string; className: string } {
+  const map: Record<string, { label: string; className: string }> = {
+    "hook:SessionStart": { label: "Hook", className: "hook-output" },
+    "claude-md": { label: "CLAUDE.md", className: "claude-md" },
+    skills: { label: "Skills", className: "skill-list" },
+    "mcp-instructions": { label: "MCP Config", className: "mcp-config" },
+    "git-status": { label: "Git Status", className: "hook-output" },
+    "current-date": { label: "Metadata", className: "unknown" },
+    "fast-mode": { label: "Metadata", className: "unknown" },
+  };
+  return map[source] ?? { label: source, className: "unknown" };
 }
 
 function identifySource(text: string): { label: string; className: string } {

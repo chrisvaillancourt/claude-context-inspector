@@ -1,15 +1,18 @@
 /**
- * Transparent proxy that captures the system prompt from Claude Code API requests.
+ * Transparent proxy that captures the full context from Claude Code API requests.
  *
  * Usage:
  *   bun run capture-proxy.ts
  *   # Then in another terminal:
  *   ANTHROPIC_BASE_URL=http://localhost:9876 claude
  *
- * The proxy intercepts POST /v1/messages, extracts the `system` field
- * (which contains the full system prompt, CLAUDE.md, hooks, etc.),
- * saves it to a timestamped JSON file, and forwards the request to
- * the real Anthropic API with streaming passthrough.
+ * The proxy intercepts POST /v1/messages and extracts:
+ *   - The `system` field (core system prompt, tool definitions)
+ *   - The `messages` array (which contains CLAUDE.md, hooks, skills,
+ *     MCP instructions, and git status injected as <system-reminder> tags)
+ *
+ * Saves everything to a timestamped JSON file, then forwards the request
+ * to the real Anthropic API with streaming passthrough.
  */
 
 const ANTHROPIC_API = "https://api.anthropic.com";
@@ -68,6 +71,7 @@ const server = Bun.serve({
           session_number: captureCount,
           model: parsed.model,
           system_blocks: parsed.system,
+          injected_context: extractInjectedContext(parsed.messages),
           message_count: parsed.messages?.length ?? 0,
           first_user_message: extractFirstUserMessage(parsed.messages),
           metadata: {
@@ -132,6 +136,56 @@ async function forwardRaw(
     status: resp.status,
     headers: respHeaders,
   });
+}
+
+/**
+ * Extract <system-reminder> blocks from user messages. Claude Code injects
+ * CLAUDE.md, hook outputs, skill lists, MCP instructions, and git status
+ * as system-reminder tags in user messages rather than in the system field.
+ */
+function extractInjectedContext(
+  messages: any[]
+): { source: string; content: string }[] {
+  if (!Array.isArray(messages)) return [];
+  const results: { source: string; content: string }[] = [];
+  const reminderRe =
+    /<system-reminder>\s*([\s\S]*?)\s*<\/system-reminder>/g;
+
+  for (const msg of messages) {
+    const texts = getMessageTexts(msg);
+    for (const text of texts) {
+      let match;
+      while ((match = reminderRe.exec(text)) !== null) {
+        const content = match[1].trim();
+        results.push({ source: identifyReminderSource(content), content });
+      }
+    }
+  }
+  return results;
+}
+
+function getMessageTexts(msg: any): string[] {
+  if (typeof msg.content === "string") return [msg.content];
+  if (Array.isArray(msg.content)) {
+    return msg.content
+      .filter((b: any) => b.type === "text" && b.text)
+      .map((b: any) => b.text);
+  }
+  return [];
+}
+
+function identifyReminderSource(text: string): string {
+  if (text.startsWith("SessionStart")) return "hook:SessionStart";
+  if (text.includes("claudeMd") || text.includes("Contents of"))
+    return "claude-md";
+  if (text.includes("skills are available")) return "skills";
+  if (text.includes("MCP Server")) return "mcp-instructions";
+  if (text.includes("gitStatus") || text.includes("Current branch"))
+    return "git-status";
+  if (text.includes("currentDate") || text.includes("Today's date"))
+    return "current-date";
+  if (text.includes("fast_mode_info")) return "fast-mode";
+  return "system-reminder";
 }
 
 function extractFirstUserMessage(messages: any[]): string | null {
